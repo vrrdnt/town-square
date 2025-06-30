@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  town-square:
+    container_name: town-square
+    build: .
+    environment:
+      BOT_TOKEN: ""
+      DEV_GUILD_ID: ""
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('discord.js'); console.log('ok')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
