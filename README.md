@@ -1,7 +1,7 @@
 # Town Square
 
 **Town Square** is a Discord bot designed for assisting in running _Blood on the Clocktower_ (BOTC) games.  
-It sets up immersive channels, manages private voice channels for night phases, and ensures evil players can communicate if desired.
+It sets up named private channels, manages private voice channels for night phases, and ensures evil players can communicate if desired.
 
 ## Features
 
