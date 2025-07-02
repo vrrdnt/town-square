@@ -3,41 +3,75 @@ import { SlashCommandBuilder } from "discord.js";
 export default {
   data: new SlashCommandBuilder()
     .setName("reset")
-    .setDescription("Deletes all channels and roles, clearing the game."),
+    .setDescription("Cleans up all channels, roles, and resets nicknames."),
+
   async execute(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
     const state = client.session.get(interaction.guild.id);
-    if (!state) return interaction.reply({ content: "No session to reset.", ephemeral: true });
+    if (!state) {
+      return await interaction.editReply({
+        content: "No game is currently running.",
+      });
+    }
 
-    const logChannel = await interaction.guild.channels.fetch(state.logChannelId);
-    await logChannel.send("🧹 Resetting Ravenswood Bluff. Deleting channels and removing roles.");
-
-    try {
-      const category = await interaction.guild.channels.fetch(state.categoryId);
+    // Delete category (and all children channels automatically)
+    if (state.categoryId) {
+      const category = interaction.guild.channels.cache.get(state.categoryId);
       if (category) {
-        for (const [_, channel] of category.children.cache) {
-          await channel.delete();
+        try {
+          await category.delete();
+        } catch (err) {
+          console.error("Failed to delete category:", err);
         }
-        await category.delete();
       }
+    }
+
+    // Reset player nicknames & remove Townsfolk role
+    const townsfolkRole = interaction.guild.roles.cache.find(
+      (r) => r.name === "Townsfolk"
+    );
+    for (const playerId of state.players) {
+      const member = await interaction.guild.members
+        .fetch(playerId)
+        .catch(() => null);
+      if (member) {
+        try {
+          if (townsfolkRole) await member.roles.remove(townsfolkRole);
+          await member.setNickname(null);
+        } catch (err) {
+          console.error(`Failed to clean up ${member.user.tag}:`, err);
+        }
+      }
+    }
+
+    // Remove Storyteller role from GM
+    const gm = await interaction.guild.members
+      .fetch(state.gm)
+      .catch(() => null);
+    const storytellerRole = interaction.guild.roles.cache.find(
+      (r) => r.name === "Storyteller"
+    );
+    if (gm && storytellerRole) {
+      try {
+        await gm.roles.remove(storytellerRole);
+      } catch (err) {
+        console.error("Failed to remove storyteller role:", err);
+      }
+    }
+
+    // Delete leftover roles
+    try {
+      if (storytellerRole) await storytellerRole.delete();
+      if (townsfolkRole) await townsfolkRole.delete();
     } catch (err) {
-      console.error("Cleanup error:", err);
-      await logChannel.send("⚠️ Some channels failed to delete. Check manually.");
+      console.error("Failed to delete roles:", err);
     }
-
-    const storytellerRole = interaction.guild.roles.cache.find(r => r.name === "Storyteller");
-    const townsfolkRole = interaction.guild.roles.cache.find(r => r.name === "Townsfolk");
-
-    for (const uid of [state.gm, ...state.players]) {
-      const member = await interaction.guild.members.fetch(uid);
-      if (storytellerRole) await member.roles.remove(storytellerRole).catch(() => {});
-      if (townsfolkRole) await member.roles.remove(townsfolkRole).catch(() => {});
-    }
-
-    if (storytellerRole) await storytellerRole.delete().catch(() => {});
-    if (townsfolkRole) await townsfolkRole.delete().catch(() => {});
 
     client.session.delete(interaction.guild.id);
-    await logChannel.send("✅ Ravenswood Bluff has been cleared.");
-    await interaction.reply({ content: "🧹 Session reset.", ephemeral: true });
-  }
+
+    await interaction.editReply({
+      content: "✅ Ravenswood Bluff has been fully reset.",
+    });
+  },
 };

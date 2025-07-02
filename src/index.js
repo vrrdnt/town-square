@@ -1,106 +1,153 @@
-import { Client, GatewayIntentBits, Collection, REST, Routes } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  Collection,
+  Partials,
+  PermissionsBitField,
+} from "discord.js";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Load bot
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers,
+  ],
+  partials: [Partials.GuildMember],
 });
 
 client.commands = new Collection();
-client.session = new Map(); // per guild: { gm, players, evilPlayers, categoryId, townSquareId, evilChannelId, logChannelId, roles }
+client.session = new Map();
 
-const commands = [];
-const commandsPath = path.resolve("./src/commands");
-const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith(".js"));
-
-for (const file of commandFiles) {
-  const command = (await import(`./commands/${file}`)).default;
+// Load commands
+const commandsPath = path.join(__dirname, "commands");
+for (const file of fs.readdirSync(commandsPath)) {
+  const command = (await import(path.join(commandsPath, file))).default;
   client.commands.set(command.data.name, command);
-  commands.push(command.data.toJSON());
 }
 
-const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN);
-await rest.put(
-  Routes.applicationGuildCommands((await client.login(process.env.BOT_TOKEN)) && client.user.id, process.env.DEV_GUILD_ID),
-  { body: commands }
-);
-
-client.on("interactionCreate", async interaction => {
-  if (!interaction.isChatInputCommand() && !interaction.isButton()) return;
-
+// Slash command handling
+client.on("interactionCreate", async (interaction) => {
   if (interaction.isChatInputCommand()) {
     const command = client.commands.get(interaction.commandName);
-    if (!command) return;
     try {
       await command.execute(interaction, client);
     } catch (err) {
       console.error("Error running command:", err);
-      await interaction.reply({ content: "There was an error.", ephemeral: true });
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: "There was an error." });
+      } else {
+        await interaction.reply({
+          content: "There was an error.",
+          ephemeral: true,
+        });
+      }
     }
   }
 
   if (interaction.isButton()) {
-    const { guildId, user } = interaction;
-    const state = client.session.get(guildId);
-    if (!state || user.id !== state.gm) {
-      return interaction.reply({ content: "Only the Storyteller can confirm or cancel.", ephemeral: true });
-    }
+    const state = client.session.get(interaction.guild.id);
+    if (!state) return;
 
     if (interaction.customId === "cancelSetup") {
-      client.session.delete(guildId);
-      return interaction.update({ content: "❌ Setup cancelled.", components: [] });
+      await interaction.deferUpdate();
+      client.session.delete(interaction.guild.id);
+      await interaction.editReply({
+        content: "❌ Setup cancelled.",
+        components: [],
+      });
+      return;
     }
 
     if (interaction.customId === "proceedSetup") {
+      await interaction.deferUpdate();
+
+      const storytellerRole = interaction.guild.roles.cache.find(
+        (r) => r.name === "Storyteller"
+      );
+
+      // Create category with soundboard perms
       const category = await interaction.guild.channels.create({
         name: "Ravenswood Bluff",
-        type: 4
+        type: 4,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.roles.everyone.id,
+            deny: [PermissionsBitField.Flags.UseSoundboard],
+          },
+          {
+            id: storytellerRole.id,
+            allow: [PermissionsBitField.Flags.UseSoundboard],
+          },
+        ],
       });
 
-      const townSquare = await interaction.guild.channels.create({
-        name: "Town Square",
-        type: 2,
-        parent: category.id
-      });
-
-      let evilChannelId = null;
-      if (state.evilPlayers.length) {
-        const evilChannel = await interaction.guild.channels.create({
-          name: "Hell",
-          type: 0,
-          parent: category.id,
-          topic: "This channel is for the minions and demons, if the Storyteller allowed it.",
-          permissionOverwrites: [
-            { id: interaction.guild.roles.everyone, deny: ["ViewChannel"] },
-            ...state.evilPlayers.map(uid => ({ id: uid, allow: ["ViewChannel"] })),
-            { id: state.gm, allow: ["ViewChannel"] }
-          ]
-        });
-        evilChannelId = evilChannel.id;
-      }
-
+      // Create logging channel with bot access
       const logChannel = await interaction.guild.channels.create({
         name: "town-square-log",
         type: 0,
         parent: category.id,
         permissionOverwrites: [
-          { id: interaction.guild.roles.everyone, deny: ["ViewChannel"] },
-          { id: state.gm, allow: ["ViewChannel"] }
-        ]
+          { id: interaction.guild.roles.everyone.id, deny: ["ViewChannel"] },
+          { id: client.user.id, allow: ["ViewChannel", "SendMessages"] },
+        ],
+      });
+
+      // Create town square VC
+      const townSquare = await interaction.guild.channels.create({
+        name: "Town Square",
+        type: 2,
+        parent: category.id,
       });
 
       state.categoryId = category.id;
       state.townSquareId = townSquare.id;
-      state.evilChannelId = evilChannelId;
       state.logChannelId = logChannel.id;
-      client.session.set(guildId, state);
 
-      await logChannel.send(`📝 Setup complete. Players: ${state.players.map(p => `<@${p}>`).join(" ")}
-${state.evilPlayers.length ? "Evil Players: " + state.evilPlayers.map(p => `<@${p}>`).join(" ") : ""}`);
+      // If evil knows, create the read-only hell channel
+      if (state.evilPlayers.length > 0) {
+        const evilChannel = await interaction.guild.channels.create({
+          name: "hell",
+          type: 0,
+          topic: "This channel lists the minions and demons.",
+          parent: category.id,
+          permissionOverwrites: [
+            { id: interaction.guild.roles.everyone.id, deny: ["ViewChannel"] },
+            ...state.evilPlayers.map((uid) => ({
+              id: uid,
+              allow: ["ViewChannel", "ReadMessageHistory"],
+              deny: ["SendMessages"],
+            })),
+            { id: state.gm, allow: ["ViewChannel", "SendMessages"] },
+            { id: client.user.id, allow: ["ViewChannel", "SendMessages"] },
+          ],
+        });
+        state.evilChannelId = evilChannel.id;
 
-      await interaction.update({ content: "✅ Ravenswood Bluff is ready.", components: [] });
+        await evilChannel.send(`😈 **Welcome to Hell.**  
+The evil team in this game is:
+
+${state.evilPlayers.map((id) => `<@${id}>`).join("\n")}`);
+      }
+
+      client.session.set(interaction.guild.id, state);
+
+      await interaction.editReply({
+        content: "✅ Ravenswood Bluff is ready.",
+        components: [],
+      });
+      await logChannel.send("✅ Setup complete. Ravenswood Bluff is open.");
     }
   }
 });
 
-client.once("ready", () => console.log(`✅ Logged in as ${client.user.tag}`));
+// Login
+client.once("ready", () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+});
+client.login(process.env.BOT_TOKEN);
