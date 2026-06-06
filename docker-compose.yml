@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   town-square:
     container_name: town-square
@@ -7,9 +5,15 @@ services:
     environment:
       BOT_TOKEN: ""
       DEV_GUILD_ID: ""
+      REGISTER_COMMANDS: "true"
+    volumes:
+      - town-square-data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "require('discord.js'); console.log('ok')"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  town-square-data:

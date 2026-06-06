@@ -1,56 +1,62 @@
 import { SlashCommandBuilder } from "discord.js";
+import {
+  getLogChannel,
+  deadNickname,
+  isActiveParticipant,
+  requireStoryteller,
+  save,
+  setStoredNickname,
+} from "../commandUtils.js";
 
 export default {
   data: new SlashCommandBuilder()
     .setName("dead")
-    .setDescription("Marks a player as dead.")
+    .setDescription("Marks a player as dead and gives them one ghost vote.")
     .addUserOption((option) =>
       option
         .setName("player")
         .setDescription("The player to mark as dead")
         .setRequired(true)
     ),
-  async execute(interaction, client) {
-    const state = client.session.get(interaction.guild.id);
-    if (!state)
-      return interaction.reply({
-        content: "No active session.",
-        ephemeral: true,
-      });
 
-    if (interaction.user.id !== state.gm)
-      return interaction.reply({
-        content: "Only the Storyteller can mark players as dead.",
-        ephemeral: true,
-      });
+  async execute(interaction, client) {
+    const state = await requireStoryteller(interaction, client);
+    if (!state) return;
 
     const player = interaction.options.getUser("player");
-    if (!state.players.includes(player.id))
+    if (!isActiveParticipant(state, player.id)) {
       return interaction.reply({
-        content: "That user is not a registered player.",
+        content: "That user is not an active player or Traveller.",
         ephemeral: true,
       });
+    }
 
-    if (state.deadPlayers.includes(player.id))
+    state.deadPlayers ||= [];
+    if (state.deadPlayers.includes(player.id)) {
       return interaction.reply({
         content: "That player is already marked as dead.",
         ephemeral: true,
       });
+    }
+
+    await interaction.deferReply({ ephemeral: true });
 
     state.deadPlayers.push(player.id);
-    client.session.set(interaction.guild.id, state);
+    state.ghostVotes ||= {};
+    state.ghostVotes[player.id] = true;
 
     const member = await interaction.guild.members.fetch(player.id);
-    await member.setNickname(`(💀) ${member.user.username}`);
+    await setStoredNickname(member, state);
+    await member.setNickname(deadNickname(member)).catch((error) => {
+      console.error(`Failed to mark ${member.user.tag} as dead:`, error);
+    });
 
-    const logChannel = await interaction.guild.channels.fetch(
-      state.logChannelId
-    );
-    await logChannel.send(`💀 Marked <@${player.id}> as dead.`);
+    const logChannel = await getLogChannel(interaction, state);
+    await logChannel?.send(`Marked <@${player.id}> as dead. Ghost vote available.`);
+    save(interaction, client, state);
 
-    await interaction.reply({
-      content: `💀 <@${player.id}> is now dead.`,
-      ephemeral: true,
+    await interaction.editReply({
+      content: `<@${player.id}> is now dead and has one ghost vote.`,
     });
   },
 };

@@ -1,11 +1,16 @@
 import { SlashCommandBuilder } from "discord.js";
+import {
+  getLogChannel,
+  isActiveParticipant,
+  requireStoryteller,
+  restoreNickname,
+  save,
+} from "../commandUtils.js";
 
 export default {
   data: new SlashCommandBuilder()
     .setName("alive")
-    .setDescription(
-      "Marks a player as alive again and restores their nickname."
-    )
+    .setDescription("Marks a dead player as alive again.")
     .addUserOption((option) =>
       option
         .setName("player")
@@ -14,51 +19,37 @@ export default {
     ),
 
   async execute(interaction, client) {
-    await interaction.deferReply({ ephemeral: true });
-
-    const state = client.session.get(interaction.guild.id);
-    if (!state) {
-      return await interaction.editReply({
-        content: "No game is currently running.",
-      });
-    }
+    const state = await requireStoryteller(interaction, client);
+    if (!state) return;
 
     const target = interaction.options.getUser("player");
-    if (!state.players.includes(target.id)) {
-      return await interaction.editReply({
-        content: "That user is not part of the current game.",
+    if (!isActiveParticipant(state, target.id)) {
+      return interaction.reply({
+        content: "That user is not an active player or Traveller.",
+        ephemeral: true,
       });
     }
 
-    // Remove from deadPlayers if present
-    state.deadPlayers = state.deadPlayers.filter((id) => id !== target.id);
+    await interaction.deferReply({ ephemeral: true });
 
-    // Try resetting nickname
+    state.deadPlayers = (state.deadPlayers || []).filter((id) => id !== target.id);
+    if (state.ghostVotes) delete state.ghostVotes[target.id];
+
     const member = await interaction.guild.members
       .fetch(target.id)
       .catch(() => null);
     if (member) {
-      try {
-        await member.setNickname(null);
-      } catch (err) {
-        console.error(`Failed to restore nickname for ${target.tag}:`, err);
-      }
+      await restoreNickname(member, state).catch((error) => {
+        console.error(`Failed to restore nickname for ${target.tag}:`, error);
+      });
     }
 
-    // Log to logging channel
-    if (state.logChannelId) {
-      const logChannel = interaction.guild.channels.cache.get(
-        state.logChannelId
-      );
-      if (logChannel) {
-        await logChannel.send(
-          `✨ <@${target.id}> has been restored to life by the Storyteller.`
-        );
-      }
-    }
+    const logChannel = await getLogChannel(interaction, state);
+    await logChannel?.send(`<@${target.id}> has been restored to life.`);
+    save(interaction, client, state);
 
     await interaction.editReply({
-      content: `✅ <@${target.id}> is now marked as alive.`,
+      content: `<@${target.id}> is now marked as alive.`,
     });
   },
 };

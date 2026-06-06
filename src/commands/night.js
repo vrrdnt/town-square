@@ -1,4 +1,14 @@
-import { SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
+import {
+  ChannelType,
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+} from "discord.js";
+import {
+  requireStoryteller,
+  getLogChannel,
+  livingParticipantIds,
+  save,
+} from "../commandUtils.js";
 
 const nightChannelNames = [
   "Dark Alley",
@@ -6,7 +16,7 @@ const nightChannelNames = [
   "Graveyard",
   "Chapel",
   "Butcher Shop",
-  "Alchemist's Hut",
+  "Alchemist Hut",
   "Tower Room",
   "Secret Garden",
   "Smithy",
@@ -19,57 +29,112 @@ const nightChannelNames = [
   "Wine Cellar",
 ];
 
+function channelNameFor(member, index) {
+  const baseName = nightChannelNames[index % nightChannelNames.length];
+  return `${baseName} - ${member.displayName}`.slice(0, 100);
+}
+
+async function deletePrivateChannels(interaction, state) {
+  const channelIds = state.privateChannelIds || [];
+  state.privateChannelIds = [];
+
+  for (const channelId of channelIds) {
+    const channel = await interaction.guild.channels
+      .fetch(channelId)
+      .catch(() => null);
+    if (channel) await channel.delete().catch(() => null);
+  }
+}
+
 export default {
   data: new SlashCommandBuilder()
     .setName("night")
-    .setDescription("Moves each player to a private voice channel."),
+    .setDescription("Moves each living player to a private night channel."),
+
   async execute(interaction, client) {
-    const state = client.session.get(interaction.guild.id);
-    if (!state || !state.categoryId)
+    const state = await requireStoryteller(interaction, client);
+    if (!state) return;
+
+    if (!state.categoryId) {
       return interaction.reply({
-        content: "No active session.",
+        content: "Setup has not been completed yet.",
         ephemeral: true,
       });
-
-    state.phase = "night";
-    client.session.set(interaction.guild.id, state);
-
-    const logChannel = await interaction.guild.channels.fetch(
-      state.logChannelId
-    );
-    await logChannel.send(
-      `🌙 Night ${state.currentDay} falls on Ravenswood Bluff.`
-    );
-
-    const privateChannels = await Promise.all(
-      state.players.map(async (uid, idx) => {
-        return interaction.guild.channels.create({
-          name: nightChannelNames[idx % nightChannelNames.length],
-          type: 2,
-          parent: state.categoryId,
-          permissionOverwrites: [
-            {
-              id: interaction.guild.roles.everyone,
-              deny: [PermissionFlagsBits.ViewChannel],
-            },
-            { id: uid, allow: [PermissionFlagsBits.ViewChannel] },
-            { id: state.gm, allow: [PermissionFlagsBits.ViewChannel] },
-          ],
-        });
-      })
-    );
-
-    for (let i = 0; i < state.players.length; i++) {
-      const member = await interaction.guild.members.fetch(state.players[i]);
-      await member.voice.setChannel(privateChannels[i]);
-      await logChannel.send(
-        `Moved <@${member.id}> to ${privateChannels[i].name}.`
-      );
     }
 
-    await interaction.reply({
-      content: "🌙 Players moved to private locations.",
-      ephemeral: true,
+    if (state.phase === "night") {
+      return interaction.reply({
+        content: "It is already night. Use /day when the night is finished.",
+        ephemeral: true,
+      });
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    await deletePrivateChannels(interaction, state);
+
+    state.phase = "night";
+    state.currentNight = (state.currentNight || 0) + 1;
+    const logChannel = await getLogChannel(interaction, state);
+    await logChannel?.send(`Night ${state.currentNight} has started.`);
+
+    const livingPlayers = livingParticipantIds(state);
+    const privateChannels = [];
+
+    for (let index = 0; index < livingPlayers.length; index++) {
+      const member = await interaction.guild.members.fetch(livingPlayers[index]);
+      const channel = await interaction.guild.channels.create({
+        name: channelNameFor(member, index),
+        type: ChannelType.GuildVoice,
+        parent: state.categoryId,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.roles.everyone.id,
+            deny: [PermissionFlagsBits.ViewChannel],
+          },
+          {
+            id: member.id,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+              PermissionFlagsBits.Speak,
+            ],
+          },
+          {
+            id: state.gm,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+              PermissionFlagsBits.Speak,
+              PermissionFlagsBits.MoveMembers,
+            ],
+          },
+          {
+            id: client.user.id,
+            allow: [
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.Connect,
+              PermissionFlagsBits.MoveMembers,
+            ],
+          },
+        ],
+      });
+      privateChannels.push(channel);
+
+      if (member.voice.channel) {
+        await member.voice.setChannel(channel).catch(async (error) => {
+          console.error(`Failed to move ${member.user.tag}:`, error);
+          await logChannel?.send(`Could not move <@${member.id}> to ${channel.name}.`);
+        });
+      } else {
+        await logChannel?.send(`<@${member.id}> is not connected to voice.`);
+      }
+    }
+
+    state.privateChannelIds = privateChannels.map((channel) => channel.id);
+    save(interaction, client, state);
+
+    await interaction.editReply({
+      content: `Night ${state.currentNight}: ${privateChannels.length} private channel(s) ready.`,
     });
   },
 };
