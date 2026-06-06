@@ -38,6 +38,32 @@ npm start
 
 Slash commands register automatically on startup. If `DEV_GUILD_ID` is set, commands register to that guild immediately. Without it, global command registration can take time to appear in Discord.
 
+## Deployment
+
+The recommended deployment is Docker Compose on an always-on host with a persistent volume. This bot uses Discord's Gateway connection, so it should run as a long-lived process rather than a serverless function.
+
+Create an env file:
+
+```bash
+cp .env.example .env
+```
+
+Set `BOT_TOKEN` in `.env`, then run:
+
+```bash
+docker compose up -d --build
+```
+
+Useful operations:
+
+```bash
+docker compose logs -f
+docker compose pull && docker compose up -d --build
+docker compose down
+```
+
+Session state is stored in the `town-square-data` Docker volume at `/app/data/sessions.json`. Back up that volume before replacing the host.
+
 ## Storyteller Flow
 
 Start setup:

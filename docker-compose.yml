@@ -3,11 +3,13 @@ services:
     container_name: town-square
     build: .
     environment:
-      BOT_TOKEN: ""
-      DEV_GUILD_ID: ""
-      REGISTER_COMMANDS: "true"
+      BOT_TOKEN: "${BOT_TOKEN:?BOT_TOKEN is required}"
+      DEV_GUILD_ID: "${DEV_GUILD_ID:-}"
+      REGISTER_COMMANDS: "${REGISTER_COMMANDS:-true}"
+      SESSION_FILE: "/app/data/sessions.json"
     volumes:
       - town-square-data:/app/data
+    init: true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "require('discord.js'); console.log('ok')"]
